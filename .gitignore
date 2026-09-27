@@ -1,0 +1,17 @@
+.DS_Store
+
+# STM32CubeIDE build output and workspace state
+Debug/
+Release/
+.metadata/
+*.o
+*.d
+*.elf
+*.map
+*.list
+*.su
+
+# Local secrets
+.env
+.env.*
+!.env.example
