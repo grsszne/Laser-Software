@@ -1,0 +1,3 @@
+# Compiler name is resolved using the editor's PATH; no machine-specific paths.
+CompileFlags:
+  Compiler: arm-none-eabi-gcc

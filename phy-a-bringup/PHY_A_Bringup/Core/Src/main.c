@@ -92,6 +92,7 @@ int main(void)
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
 
+  uint8_t counter = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -101,6 +102,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    GPIO_PinState led2_state = (GPIO_PinState)(counter & 0x01);
+    GPIO_PinState led1_state = (GPIO_PinState)((counter & 0x02) >> 1);
+
+    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, led1_state);
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, led2_state);
+
+    counter++;
+    if (counter == 4) {
+      counter = 0;
+    };
+    HAL_Delay(250);
   }
   /* USER CODE END 3 */
 }
@@ -163,14 +175,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, LED1_Pin|LED2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : LED1_Pin */
-  GPIO_InitStruct.Pin = LED1_Pin;
+  /*Configure GPIO pins : LED1_Pin LED2_Pin */
+  GPIO_InitStruct.Pin = LED1_Pin|LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LED1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
