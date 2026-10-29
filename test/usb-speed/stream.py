@@ -6,7 +6,8 @@ import serial
 from serial.tools import list_ports
 
 VID, PID = 0x0483, 0x5740
-SIZE = 1024 * 1024  # 1 MiB
+C = 10;
+SIZE = 1024 * 1024 * C # `C` MiB
 
 ports = [
     p.device for p in list_ports.comports()
@@ -29,8 +30,8 @@ with serial.Serial(
 
     def writer():
         try:
-            for i in range(0, SIZE, 512):
-                chunk = payload[i:i + 512]
+            for i in range(0, SIZE, 16384):
+                chunk = payload[i:i + 16384]
                 if ser.write(chunk) != len(chunk):
                     raise RuntimeError("Short write")
         except Exception as exc:

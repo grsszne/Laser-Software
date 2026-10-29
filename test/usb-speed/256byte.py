@@ -24,7 +24,7 @@ def test_echo():
     print(f"Connected to PHY-A on {port}")
 
     with serial.Serial(port, 115200, timeout=2) as ser:
-        payload = bytes(range(256))
+        payload = bytes(range(256)) * 2
 
         ser.write(payload)
         response = ser.read(len(payload))

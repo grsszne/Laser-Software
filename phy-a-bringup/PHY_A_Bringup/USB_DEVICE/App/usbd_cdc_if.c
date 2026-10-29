@@ -23,6 +23,8 @@
 
 /* USER CODE BEGIN INCLUDE */
 
+#include <string.h>
+
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,6 +98,39 @@ uint8_t UserTxBufferHS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 
+
+#define ECHO_DEPTH 8U
+#define ECHO_PACKET_SIZE 512U
+
+// Eight buffers, each holding one USB packet
+static uint8_t echo_queue[ECHO_DEPTH][ECHO_PACKET_SIZE]
+    __attribute__((aligned(4)));
+
+// Length of each queued packet
+static uint16_t echo_lengths[ECHO_DEPTH];
+
+// Circular queue state
+static uint8_t echo_head = 0;
+static uint8_t echo_tail = 0;
+static uint8_t echo_count = 0;
+
+// USB transfer state
+static uint8_t echo_tx_active = 0;
+static uint8_t echo_rx_paused = 0;
+
+
+static volatile uint32_t rx_packet_count = 0;
+static volatile uint32_t rx_512_count = 0;
+static volatile uint32_t queue_full_count = 0;
+static volatile uint32_t tx_complete_count = 0;
+
+
+static volatile uint32_t rx_total_bytes = 0;
+static volatile uint32_t rx_min_length = 0xFFFFFFFFU;
+static volatile uint32_t rx_max_length = 0;
+static volatile uint8_t queue_max_depth = 0;
+
+
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -130,6 +165,9 @@ static int8_t CDC_TransmitCplt_HS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum);
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_DECLARATION */
 
+static void Echo_KickTx(void);
+
+
 /* USER CODE END PRIVATE_FUNCTIONS_DECLARATION */
 
 /**
@@ -154,10 +192,34 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_HS =
 static int8_t CDC_Init_HS(void)
 {
   /* USER CODE BEGIN 8 */
+
+  /* Reset echo queue state */
+  echo_head = 0;
+  echo_tail = 0;
+  echo_count = 0;
+
+  echo_tx_active = 0;
+  echo_rx_paused = 0;
+
+  rx_packet_count = 0;
+  rx_512_count = 0;
+  queue_full_count = 0;
+  tx_complete_count = 0;
+
+
+  /* Reset receive-length diagnostics */
+  rx_total_bytes = 0;
+  rx_min_length = 0xFFFFFFFFU;
+  rx_max_length = 0;
+  queue_max_depth = 0;
+
+
   /* Set Application Buffers */
   USBD_CDC_SetTxBuffer(&hUsbDeviceHS, UserTxBufferHS, 0);
   USBD_CDC_SetRxBuffer(&hUsbDeviceHS, UserRxBufferHS);
+
   return (USBD_OK);
+
   /* USER CODE END 8 */
 }
 
@@ -262,30 +324,85 @@ static int8_t CDC_Control_HS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
   */
 
+
 static int8_t CDC_Receive_HS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 11 */
-  static uint8_t echo_buf[512];
 
   USBD_CDC_SetRxBuffer(&hUsbDeviceHS, Buf);
 
-  if (*Len > 0 && *Len <= sizeof(echo_buf))
+  // Reject unexpected packet sizes or a full queue.
+  if (*Len > ECHO_PACKET_SIZE || echo_count >= ECHO_DEPTH)
   {
-    memcpy(echo_buf, Buf, *Len);
-
-    if (CDC_Transmit_HS(echo_buf, (uint16_t)*Len) == USBD_OK)
-    {
-      // Wait for TX completion before receiving more.
-      return USBD_OK;
-    }
+    return USBD_FAIL;
   }
 
-  // Recover from empty/invalid packets or failed TX.
-  USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+
+  if (*Len > 0)
+  {
+      // Count received packets.
+      rx_packet_count++;
+
+      rx_total_bytes += *Len;
+
+      if (*Len < rx_min_length)
+      {
+          rx_min_length = *Len;
+      }
+
+      if (*Len > rx_max_length)
+      {
+          rx_max_length = *Len;
+      }
+
+
+      // Count full-size HS USB packets.
+      if (*Len == 512U)
+      {
+          rx_512_count++;
+      }
+
+      // Copy received data into the queue.
+      memcpy(echo_queue[echo_tail], Buf, *Len);
+
+      echo_lengths[echo_tail] = (uint16_t)*Len;
+      echo_tail = (echo_tail + 1U) % ECHO_DEPTH;
+      echo_count++;
+
+
+      if (echo_count > queue_max_depth)
+      {
+          queue_max_depth = echo_count;
+      }
+
+
+      // Count occasions when the queue reaches capacity.
+      if (echo_count == ECHO_DEPTH)
+      {
+          queue_full_count++;
+      }
+  }
+
+
+  // Start transmitting if USB TX is idle.
+  Echo_KickTx();
+
+  // Rearm reception if there's room in the queue.
+  if (echo_count < ECHO_DEPTH)
+  {
+    USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+  }
+  else
+  {
+    // Stop accepting packets until a slot is freed.
+    echo_rx_paused = 1;
+  }
 
   return USBD_OK;
+
   /* USER CODE END 11 */
 }
+
 
 
 /**
@@ -330,12 +447,32 @@ static int8_t CDC_TransmitCplt_HS(
   uint8_t result = USBD_OK;
 
   /* USER CODE BEGIN 14 */
+
   UNUSED(Buf);
   UNUSED(Len);
   UNUSED(epnum);
+  tx_complete_count++;
 
-  // Previous echo finished. Accept the next packet.
-  USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+  // The previous packet has finished transmitting.
+  if (echo_tx_active && echo_count > 0)
+  {
+      echo_tx_active = 0;
+
+      // Release the oldest packet.
+      echo_head = (echo_head + 1U) % ECHO_DEPTH;
+      echo_count--;
+  }
+
+  // If the queue was full, we now have room.
+  // Allow USB to receive another packet.
+  if (echo_rx_paused && echo_count < ECHO_DEPTH)
+  {
+      echo_rx_paused = 0;
+      USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+  }
+
+  // Begin transmitting the next queued packet.
+  Echo_KickTx();
 
   /* USER CODE END 14 */
 
@@ -344,6 +481,26 @@ static int8_t CDC_TransmitCplt_HS(
 
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+
+
+static void Echo_KickTx(void)
+{
+    // Don't start another transfer if USB is busy
+    // or the queue is empty.
+    if (echo_tx_active || echo_count == 0)
+        return;
+
+    // Get the oldest packet in the queue.
+    uint8_t *data = echo_queue[echo_head];
+    uint16_t length = echo_lengths[echo_head];
+
+    // Start asynchronous USB transmission.
+    if (CDC_Transmit_HS(data, length) == USBD_OK)
+    {
+        echo_tx_active = 1;
+    }
+}
+
 
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
