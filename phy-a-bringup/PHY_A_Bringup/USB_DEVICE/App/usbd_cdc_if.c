@@ -261,27 +261,32 @@ static int8_t CDC_Control_HS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   * @param  Len: Number of data received (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
   */
+
 static int8_t CDC_Receive_HS(uint8_t* Buf, uint32_t *Len)
 {
-	  /* USER CODE BEGIN 11 */
-	  static uint8_t echo_buf[512];
+  /* USER CODE BEGIN 11 */
+  static uint8_t echo_buf[512];
 
-	  if (*Len > 0 && *Len <= sizeof(echo_buf))
-	  {
-	    for (uint32_t i = 0; i < *Len; i++)
-	    {
-	      echo_buf[i] = Buf[i];
-	    }
+  USBD_CDC_SetRxBuffer(&hUsbDeviceHS, Buf);
 
-	    CDC_Transmit_HS(echo_buf, (uint16_t)*Len);
-	  }
+  if (*Len > 0 && *Len <= sizeof(echo_buf))
+  {
+    memcpy(echo_buf, Buf, *Len);
 
-	  USBD_CDC_SetRxBuffer(&hUsbDeviceHS, Buf);
-	  USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+    if (CDC_Transmit_HS(echo_buf, (uint16_t)*Len) == USBD_OK)
+    {
+      // Wait for TX completion before receiving more.
+      return USBD_OK;
+    }
+  }
 
-	  return (USBD_OK);
-	  /* USER CODE END 11 */
+  // Recover from empty/invalid packets or failed TX.
+  USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+
+  return USBD_OK;
+  /* USER CODE END 11 */
 }
+
 
 /**
   * @brief  Data to send over USB IN endpoint are sent over CDC interface
@@ -316,16 +321,27 @@ uint8_t CDC_Transmit_HS(uint8_t* Buf, uint16_t Len)
   * @param  Len: Number of data received (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
   */
-static int8_t CDC_TransmitCplt_HS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
+
+static int8_t CDC_TransmitCplt_HS(
+    uint8_t *Buf,
+    uint32_t *Len,
+    uint8_t epnum)
 {
   uint8_t result = USBD_OK;
+
   /* USER CODE BEGIN 14 */
   UNUSED(Buf);
   UNUSED(Len);
   UNUSED(epnum);
+
+  // Previous echo finished. Accept the next packet.
+  USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+
   /* USER CODE END 14 */
+
   return result;
 }
+
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
