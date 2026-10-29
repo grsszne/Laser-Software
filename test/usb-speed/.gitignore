@@ -1,0 +1,12 @@
+# Virtual environment files (test scripts in this directory are tracked).
+/bin/
+/include/
+/lib/
+/lib64
+/Scripts/
+/Lib/
+/pyvenv.cfg
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
