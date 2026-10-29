@@ -4,6 +4,7 @@
 Debug/
 Release/
 .metadata/
+.cache/clangd/
 *.o
 *.d
 *.elf
