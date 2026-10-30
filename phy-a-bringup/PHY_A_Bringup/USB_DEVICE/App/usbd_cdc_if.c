@@ -131,6 +131,26 @@ static volatile uint32_t rx_max_length = 0;
 static volatile uint8_t queue_max_depth = 0;
 
 
+/* TX-only benchmark configuration */
+#define TX_BENCH_TOTAL (10U * 1024U * 1024U)
+#define TX_BENCH_CHUNK 4096U
+
+/* Persistent buffer for asynchronous USB transfers */
+static uint8_t tx_bench_buffer[TX_BENCH_CHUNK]
+    __attribute__((aligned(4)));
+
+/* Benchmark state */
+static volatile uint32_t tx_bench_sent = 0;
+static uint8_t tx_bench_active = 0;
+static uint8_t tx_bench_inflight = 0;
+
+static volatile uint32_t tx_gen_cycles_min = 0xFFFFFFFFU;
+static volatile uint32_t tx_gen_cycles_max = 0;
+static volatile uint64_t tx_gen_cycles_total = 0;
+static volatile uint32_t tx_gen_calls = 0;
+
+
+
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -166,7 +186,7 @@ static int8_t CDC_TransmitCplt_HS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum);
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_DECLARATION */
 
 static void Echo_KickTx(void);
-
+static void TxBench_Kick(void);
 
 /* USER CODE END PRIVATE_FUNCTIONS_DECLARATION */
 
@@ -213,10 +233,27 @@ static int8_t CDC_Init_HS(void)
   rx_max_length = 0;
   queue_max_depth = 0;
 
+  /* Reset TX benchmark state */
+  tx_bench_sent = 0;
+  tx_bench_active = 0;
+  tx_bench_inflight = 0;
+
+
+  /* Reset CPU cycle profiling counters */
+  tx_gen_cycles_min = 0xFFFFFFFFU;
+  tx_gen_cycles_max = 0;
+  tx_gen_cycles_total = 0;
+  tx_gen_calls = 0;
+
+
 
   /* Set Application Buffers */
   USBD_CDC_SetTxBuffer(&hUsbDeviceHS, UserTxBufferHS, 0);
   USBD_CDC_SetRxBuffer(&hUsbDeviceHS, UserRxBufferHS);
+
+  /* Enable Cortex-M7 cycle counter */
+
+
 
   return (USBD_OK);
 
@@ -323,13 +360,55 @@ static int8_t CDC_Control_HS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   * @param  Len: Number of data received (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
   */
-
-
 static int8_t CDC_Receive_HS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 11 */
 
   USBD_CDC_SetRxBuffer(&hUsbDeviceHS, Buf);
+
+
+  /* Runtime trace-state experiment */
+  if (*Len == 1U &&
+      (Buf[0] == 0xA3U || Buf[0] == 0xA4U) &&
+      !tx_bench_active &&
+      !echo_tx_active &&
+      echo_count == 0U)
+  {
+      if (Buf[0] == 0xA4U)
+      {
+          CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+      }
+      else
+      {
+          CoreDebug->DEMCR &= ~CoreDebug_DEMCR_TRCENA_Msk;
+      }
+
+      USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+      return USBD_OK;
+  }
+
+
+
+  // Single-byte command: start TX-only benchmark.
+  if (*Len == 1U &&
+      Buf[0] == 0xA5U &&
+      !tx_bench_active &&
+      !echo_tx_active &&
+      echo_count == 0U)
+  {
+      // Reset benchmark state.
+      tx_bench_sent = 0;
+      tx_bench_inflight = 0;
+      tx_bench_active = 1;
+
+      // Begin transmitting generated data.
+      TxBench_Kick();
+
+      // Do not rearm USB reception yet.
+      // We'll resume receiving after the benchmark finishes.
+      return USBD_OK;
+  }
+
 
   // Reject unexpected packet sizes or a full queue.
   if (*Len > ECHO_PACKET_SIZE || echo_count >= ECHO_DEPTH)
@@ -403,8 +482,6 @@ static int8_t CDC_Receive_HS(uint8_t* Buf, uint32_t *Len)
   /* USER CODE END 11 */
 }
 
-
-
 /**
   * @brief  Data to send over USB IN endpoint are sent over CDC interface
   *         through this function.
@@ -438,20 +515,40 @@ uint8_t CDC_Transmit_HS(uint8_t* Buf, uint16_t Len)
   * @param  Len: Number of data received (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
   */
-
-static int8_t CDC_TransmitCplt_HS(
-    uint8_t *Buf,
-    uint32_t *Len,
-    uint8_t epnum)
+static int8_t CDC_TransmitCplt_HS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 {
   uint8_t result = USBD_OK;
-
   /* USER CODE BEGIN 14 */
 
   UNUSED(Buf);
   UNUSED(Len);
   UNUSED(epnum);
   tx_complete_count++;
+
+
+  /* Handle TX-only benchmark transfers */
+  if (tx_bench_active)
+  {
+      // The previous USB transmission has completed.
+      tx_bench_inflight = 0;
+
+      if (tx_bench_sent < TX_BENCH_TOTAL)
+      {
+          // Generate and transmit the next chunk.
+          TxBench_Kick();
+      }
+      else
+      {
+          // All 10 MiB have finished transmitting.
+          tx_bench_active = 0;
+
+          // Restore USB reception for normal echo mode.
+          USBD_CDC_ReceivePacket(&hUsbDeviceHS);
+      }
+
+      return result;
+  }
+
 
   // The previous packet has finished transmitting.
   if (echo_tx_active && echo_count > 0)
@@ -475,10 +572,8 @@ static int8_t CDC_TransmitCplt_HS(
   Echo_KickTx();
 
   /* USER CODE END 14 */
-
   return result;
 }
-
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
@@ -500,6 +595,46 @@ static void Echo_KickTx(void)
         echo_tx_active = 1;
     }
 }
+
+
+static void TxBench_Kick(void)
+{
+    // Only submit data when the previous transfer
+    // has finished and benchmarking is active.
+    if (!tx_bench_active || tx_bench_inflight)
+        return;
+
+    if (tx_bench_sent >= TX_BENCH_TOTAL)
+        return;
+
+    uint32_t remaining = TX_BENCH_TOTAL - tx_bench_sent;
+
+    uint16_t length = (remaining > TX_BENCH_CHUNK)
+        ? TX_BENCH_CHUNK
+        : (uint16_t)remaining;
+
+    uint32_t offset = tx_bench_sent;
+
+    // Generate deterministic benchmark data.
+    for (uint16_t i = 0; i < length; i++)
+    {
+        uint32_t pos = offset + i;
+
+        tx_bench_buffer[i] = (uint8_t)(
+            pos ^ (pos >> 8) ^
+            (pos >> 16) ^ (pos >> 24)
+        );
+    }
+
+
+    // Submit the asynchronous USB transfer.
+    if (CDC_Transmit_HS(tx_bench_buffer, length) == USBD_OK)
+    {
+        tx_bench_inflight = 1;
+        tx_bench_sent += length;
+    }
+}
+
 
 
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
