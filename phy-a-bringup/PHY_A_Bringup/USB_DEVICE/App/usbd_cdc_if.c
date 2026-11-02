@@ -91,10 +91,13 @@
 /* Create buffer for reception and transmission           */
 /* It's up to user to redefine and/or remove those define */
 /** Received data over USB are stored in this buffer      */
-uint8_t UserRxBufferHS[APP_RX_DATA_SIZE];
+uint8_t UserRxBufferHS[APP_RX_DATA_SIZE]
+					    __attribute__((aligned(4)));
 
 /** Data to send over USB CDC are stored in this buffer   */
-uint8_t UserTxBufferHS[APP_TX_DATA_SIZE];
+uint8_t UserTxBufferHS[APP_TX_DATA_SIZE]
+					    __attribute__((aligned(4)));
+
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 
@@ -133,7 +136,7 @@ static volatile uint8_t queue_max_depth = 0;
 
 /* TX-only benchmark configuration */
 #define TX_BENCH_TOTAL (10U * 1024U * 1024U)
-#define TX_BENCH_CHUNK 4096U
+#define TX_BENCH_CHUNK 16384U
 
 /* Persistent buffer for asynchronous USB transfers */
 static uint8_t tx_bench_buffer[TX_BENCH_CHUNK]
