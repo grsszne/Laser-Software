@@ -6,7 +6,7 @@ import serial
 from serial.tools import list_ports
 
 VID, PID = 0x0483, 0x5740
-C = 10;
+C = 100;
 SIZE = 1024 * 1024 * C # `C` MiB
 
 ports = [
